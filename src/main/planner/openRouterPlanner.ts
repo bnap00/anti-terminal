@@ -65,7 +65,7 @@ export async function createAIPlan(
     "Use only view types: markdown, html, log, stats, table, bar-chart, actions.",
     "Use html view for interactive widgets, SVG charts, styled tables, or any rich visual content. Put body-level HTML/CSS/JS in the content field — no <html>/<head>/<body> wrapper, no command needed.",
     "html renders inline in the app (not an iframe). Inherit the dark theme via CSS vars: --text, --accent, --muted, --bg, --border, --success, --warn, --danger. Font: 'IBM Plex Sans', system-ui.",
-    "html scripts have full shell access: `const r = await window.antiTerminal.runShell('command')` returns {stdout, stderr, code}. Use this for interactive file creation, deletion, installs, git ops, etc. Write commands are allowed in html views.",
+    "html scripts can call `const r = await window.antiTerminal.runShell('command')` and receive {stdout, stderr, code, status, commandId}. Non-read commands are allowed only after the runtime shows an approval card.",
     "Use only parsers: raw, git-log, process-table, du-table, du-chart.",
     "Use bar-chart view with du-chart parser for graphs, charts, or size comparisons.",
     "Commands must be bash-compatible and read-only. No destructive commands or package installs.",

@@ -1,4 +1,4 @@
-import type { ActionInvocation, ChatMessage, DebugLogEntry, RunResult, SessionSnapshot, TaskSession } from "../main/runtime/types";
+import type { ActionInvocation, ChatMessage, CommandExecution, DebugLogEntry, RunResult, SessionSnapshot, TaskSession } from "../main/runtime/types";
 import type { AppSettings } from "../main/settings/types";
 
 declare global {
@@ -18,13 +18,17 @@ declare global {
       windowMinimize(): Promise<void>;
       windowMaximize(): Promise<void>;
       windowClose(): Promise<void>;
-      runShell(command: string): Promise<RunResult>;
+      runShell(command: string, sessionId?: string): Promise<RunResult>;
       getCwd(): Promise<string>;
       startChat(prompt: string): Promise<TaskSession>;
       runDirect(sessionId: string | null, command: string): Promise<TaskSession>;
+      approveCommand(commandId: string): Promise<RunResult>;
+      denyCommand(commandId: string): Promise<RunResult>;
+      stopCommand(commandId: string): Promise<RunResult | undefined>;
       onSettingsUpdate(listener: (settings: AppSettings) => void): () => void;
       onSessionsUpdate(listener: (snapshot: SessionSnapshot) => void): () => void;
       onDebugLog(listener: (entry: DebugLogEntry) => void): () => void;
+      onCommandUpdate(listener: (execution: CommandExecution) => void): () => void;
     };
   }
 }

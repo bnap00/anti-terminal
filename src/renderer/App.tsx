@@ -578,6 +578,7 @@ function ViewCard({ session, view, bridge }: {
       </div>
 
       {view.type === "markdown" && <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{view.content}</ReactMarkdown></div>}
+      {view.type === "approval" && <ApprovalView view={view} bridge={bridge} />}
       {view.type === "html" && <HtmlView content={view.content} sessionId={session.id} />}
       {view.type === "log" && <pre className="log">{view.content}</pre>}
       {view.type === "terminal" && <pre className="terminal-view">{view.content}</pre>}
@@ -592,7 +593,7 @@ function ViewCard({ session, view, bridge }: {
       {view.type === "pie-chart" && <PieChartView data={view.data} />}
       {view.type === "gauge" && <GaugeView data={view.data} />}
       {view.type === "timeline" && <TimelineView data={view.data} />}
-      {view.type === "form" && <FormView view={view} bridge={bridge} />}
+      {view.type === "form" && <FormView sessionId={session.id} view={view} bridge={bridge} />}
       {view.type === "progress" && <ProgressView data={view.data} />}
       {view.type === "alert" && <AlertView data={view.data} />}
       {view.type === "image" && <ImageView data={view.data} />}
@@ -619,7 +620,14 @@ function HtmlView({ content, sessionId }: { content: string; sessionId: string }
     // Inject session context so scripts can call window.antiTerminal.runShell()
     const ctx = document.createElement("script");
     ctx.dataset.atCtx = "1";
-    ctx.textContent = `window.__atSessionId = ${JSON.stringify(sessionId)};`;
+    ctx.textContent = [
+      `window.__atSessionId = ${JSON.stringify(sessionId)};`,
+      "if (window.antiTerminal && !window.antiTerminal.__sessionRunShellWrapped) {",
+      "  const originalRunShell = window.antiTerminal.runShell.bind(window.antiTerminal);",
+      "  window.antiTerminal.runShell = (command) => originalRunShell(command, window.__atSessionId);",
+      "  window.antiTerminal.__sessionRunShellWrapped = true;",
+      "}"
+    ].join("\n");
     el.insertBefore(ctx, el.firstChild);
 
     // innerHTML doesn't execute scripts — re-inject user scripts so they run
@@ -632,6 +640,41 @@ function HtmlView({ content, sessionId }: { content: string; sessionId: string }
   }, [content, sessionId]);
 
   return <div ref={ref} className="html-view" />;
+}
+
+function ApprovalView({ view, bridge }: {
+  view: Extract<ViewNode, { type: "approval" }>;
+  bridge: Window["antiTerminal"] | undefined;
+}) {
+  const { commandId, command, risk, reason, status } = view.data;
+  const pending = status === "pending-approval";
+  const running = status === "running";
+  const done = !pending && !running;
+
+  return (
+    <div className={`approval-card approval-${risk.replace("/", "-")}`}>
+      <div className="approval-main">
+        <div className="approval-heading">
+          <span className="approval-risk">{risk}</span>
+          <span className="approval-status">{status}</span>
+        </div>
+        <pre className="approval-command">{command}</pre>
+        <p className="approval-reason">{reason}</p>
+      </div>
+      <div className="approval-actions">
+        {pending ? (
+          <>
+            <button className="approval-button approval-deny" onClick={() => void bridge?.denyCommand(commandId)}>Deny</button>
+            <button className="approval-button approval-approve" onClick={() => void bridge?.approveCommand(commandId)}>Approve</button>
+          </>
+        ) : running ? (
+          <button className="approval-button approval-deny" onClick={() => void bridge?.stopCommand(commandId)}>Stop</button>
+        ) : (
+          <span className="approval-final">{done ? status : ""}</span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function BarChartView({ items }: { items: Array<{ label: string; value: string; bytes: number }> }) {
@@ -954,7 +997,11 @@ function TimelineView({ data }: { data: Extract<ViewNode, { type: "timeline" }>[
   );
 }
 
-function FormView({ view, bridge }: { view: Extract<ViewNode, { type: "form" }>; bridge: Window["antiTerminal"] | undefined }) {
+function FormView({ sessionId, view, bridge }: {
+  sessionId: string;
+  view: Extract<ViewNode, { type: "form" }>;
+  bridge: Window["antiTerminal"] | undefined;
+}) {
   const { fields, submitCommand, submitLabel = "Run" } = view.data;
   const [values, setValues] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
@@ -970,8 +1017,12 @@ function FormView({ view, bridge }: { view: Extract<ViewNode, { type: "form" }>;
     const cmd = submitCommand.replace(/\{\{(\w+)\}\}/g, (_, k) => values[k] ?? "");
     setRunning(true);
     try {
-      const r = await bridge.runShell(cmd);
-      setOutput([r.stdout.trim(), r.stderr.trim()].filter(Boolean).join("\n") || "(no output)");
+      const r = await bridge.runShell(cmd, sessionId);
+      setOutput(
+        r.status === "pending-approval"
+          ? "Approval required above."
+          : [r.stdout.trim(), r.stderr.trim()].filter(Boolean).join("\n") || "(no output)"
+      );
     } finally {
       setRunning(false);
     }

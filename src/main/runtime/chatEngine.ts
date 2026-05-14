@@ -7,20 +7,70 @@ import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../settings/types.js";
 import type { DataSourceSpec, TaskSession, ViewNode } from "./types.js";
 import { createProvider, getActiveModel } from "../aiProvider.js";
 
-const rawViewSchema = z.object({
-  id: z.string().describe("Kebab-case ID; reuse an existing view ID to update in place"),
-  type: z.string(),
-  title: z.string(),
-  // string-payload types (log, markdown, html, code, diff, json-tree, terminal)
-  content: z.string().optional(),
-  lang: z.string().optional(),
-  // structured-data types (line-chart, pie-chart, gauge, timeline, form, …)
-  data: z.record(z.string(), z.unknown()).optional(),
-  // legacy inline fields kept for backward-compat (bar-chart, table, stats)
-  items: z.array(z.unknown()).optional(),
-  columns: z.array(z.string()).optional(),
-  rows: z.array(z.record(z.string(), z.string())).optional()
-});
+const rawViewSchema = z.preprocess(
+  (value) => {
+    if (!value || typeof value !== "object") return value;
+    const raw = value as Record<string, unknown>;
+    const columns = Array.isArray(raw.columns) ? raw.columns.map(String) : [];
+    const rows = Array.isArray(raw.rows) ? raw.rows : undefined;
+
+    if (rows?.some((row) => Array.isArray(row))) {
+      return {
+        ...raw,
+        rows: rows.map((row) => {
+          if (!Array.isArray(row)) return row;
+          return Object.fromEntries(columns.map((column, index) => [column, String(row[index] ?? "")]));
+        })
+      };
+    }
+
+    return raw;
+  },
+  z.object({
+    id: z.string().describe("Kebab-case ID; reuse an existing view ID to update in place"),
+    type: z.string(),
+    title: z.string(),
+    // string-payload types (log, markdown, html, code, diff, json-tree, terminal)
+    content: z.string().optional(),
+    lang: z.string().optional(),
+    // structured-data types (line-chart, pie-chart, gauge, timeline, form, …)
+    data: z.record(z.string(), z.unknown()).optional(),
+    // legacy inline fields kept for backward-compat (bar-chart, table, stats)
+    items: z.array(z.unknown()).optional(),
+    columns: z.array(z.string()).optional(),
+    rows: z.array(z.record(z.string(), z.string())).optional()
+  })
+);
+
+const commandParserSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "log" || normalized === "terminal" || normalized === "text") return "raw";
+    return normalized;
+  },
+  z.enum(["raw", "git-log", "process-table", "du-table", "du-chart"])
+);
+
+const commandSchema = z.preprocess(
+  (value) => {
+    if (!value || typeof value !== "object") return value;
+    const raw = value as Record<string, unknown>;
+    const shell = typeof raw.shell === "string" ? raw.shell.trim() : "";
+    const nestedCommand = typeof raw.command === "string" ? raw.command.trim() : "";
+
+    if (nestedCommand && (shell === "bash" || shell === "sh" || shell === "zsh")) {
+      return { ...raw, shell: nestedCommand };
+    }
+
+    return raw;
+  },
+  z.object({
+    shell: z.string().describe("Read-only bash command"),
+    parser: commandParserSchema.describe("Parser for the command output"),
+    intervalMs: z.number().nullish().describe("Set for live views; omit for one-shot")
+  })
+);
 
 const chatResponseSchema = z.object({
   reply: z.string().min(1).describe("Conversational response — always present"),
@@ -30,14 +80,7 @@ const chatResponseSchema = z.object({
     .optional()
     .describe("Request full docs for these component types before generating the view"),
   view: rawViewSchema.nullable().optional().describe("Omit when no visual output is needed"),
-  command: z
-    .object({
-      shell: z.string().describe("Read-only bash command"),
-      parser: z
-        .enum(["raw", "git-log", "process-table", "du-table", "du-chart"])
-        .describe("Parser for the command output"),
-      intervalMs: z.number().nullish().describe("Set for live views; omit for one-shot")
-    })
+  command: commandSchema
     .nullable()
     .optional()
     .describe("Required when view needs shell data; omit for html/form/static views")
@@ -100,7 +143,7 @@ export async function sendChatMessage(
     }
 
     // load_components — inject schema docs then continue
-    if (parsed.load_components?.length) {
+    if (parsed.load_components?.length && !parsed.view) {
       const docs = formatComponentDocs(parsed.load_components);
       log({ level: "info", message: "Agent requested component docs.", detail: parsed.load_components.join(", ") });
       onStep?.("Loading component docs…");
@@ -221,9 +264,83 @@ function extractJson(value: string): unknown {
   } catch {
     const first = stripped.indexOf("{");
     const last = stripped.lastIndexOf("}");
-    if (first >= 0 && last > first) return JSON.parse(stripped.slice(first, last + 1));
+    if (first >= 0 && last > first) {
+      const candidate = stripped.slice(first, last + 1);
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        return JSON.parse(repairJsonText(candidate));
+      }
+    }
+    if (first >= 0) {
+      return JSON.parse(repairJsonText(stripped.slice(first)));
+    }
     throw new Error("No valid JSON found in response.");
   }
+}
+
+function repairJsonText(value: string): string {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  const stack: string[] = [];
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+
+    if (inString) {
+      if (escaped) {
+        output += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        output += char;
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") {
+        output += char;
+        inString = false;
+        continue;
+      }
+      if (char === "\n") {
+        output += "\\n";
+        continue;
+      }
+      if (char === "\r") {
+        output += "\\r";
+        continue;
+      }
+      if (char === "\t") {
+        output += "\\t";
+        continue;
+      }
+      output += char;
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      output += char;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      stack.push(char === "{" ? "}" : "]");
+      output += char;
+      continue;
+    }
+    if ((char === "}" || char === "]") && stack[stack.length - 1] === char) {
+      stack.pop();
+      output += char;
+      continue;
+    }
+    output += char;
+  }
+
+  if (inString) output += "\"";
+  while (stack.length) output += stack.pop();
+  return output;
 }
 
 export function buildEmptyView(

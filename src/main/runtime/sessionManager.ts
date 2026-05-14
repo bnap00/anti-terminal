@@ -3,10 +3,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { rawViewToViewNode, sendChatMessage, type ChatResult } from "./chatEngine.js";
-import { runCommand } from "./shell.js";
+import { CommandRuntime } from "./commandRuntime.js";
+import { appendChunkToView, applyResultToView, parseFixedWidthTable, summarizeResult } from "./parsers.js";
 import type {
   ActionInvocation,
   ChatMessage,
+  CommandExecution,
   DataSourceSpec,
   DebugLogEntry,
   RunResult,
@@ -18,19 +20,28 @@ import type {
 import type { AppSettings, ProviderType } from "../settings/types.js";
 
 type SessionListener = (snapshot: SessionSnapshot) => void;
+type CommandListener = (execution: CommandExecution) => void;
 type DebugLogger = (entry: Omit<DebugLogEntry, "id" | "at">) => void;
 
 export class SessionManager {
   private readonly sessions = new Map<string, TaskSession>();
   private readonly pollers = new Map<string, NodeJS.Timeout[]>();
   private readonly listeners = new Set<SessionListener>();
+  private readonly commandListeners = new Set<CommandListener>();
+  private readonly commandRuntime: CommandRuntime;
   private saveTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly cwd: string,
     private readonly storePath: string,
     private readonly debugLog: DebugLogger = () => undefined
-  ) {}
+  ) {
+    this.commandRuntime = new CommandRuntime({
+      onCreate: (execution) => this.recordCommand(execution),
+      onUpdate: (execution) => this.updateCommand(execution),
+      onChunk: (execution, stream, chunk) => this.appendCommandChunk(execution, stream, chunk)
+    });
+  }
 
   async load(): Promise<void> {
     try {
@@ -40,6 +51,12 @@ export class SessionManager {
         // Processes don't survive restarts — mark anything mid-flight as completed
         if (session.status === "running") session.status = "completed";
         session.liveViewIds = [];
+        session.commands = (session.commands ?? []).map((command) => {
+          if (command.status === "running" || command.status === "pending-approval") {
+            return { ...command, status: "stopped", endedAt: Date.now(), stderr: command.stderr || "Command stopped on app restart." };
+          }
+          return command;
+        });
         this.sessions.set(session.id, session);
       }
     } catch {
@@ -70,6 +87,13 @@ export class SessionManager {
 
     return () => {
       this.listeners.delete(listener);
+    };
+  }
+
+  subscribeCommands(listener: CommandListener): () => void {
+    this.commandListeners.add(listener);
+    return () => {
+      this.commandListeners.delete(listener);
     };
   }
 
@@ -153,17 +177,14 @@ export class SessionManager {
       message: `Running action "${input.action.label}"`,
       detail: input.action.command
     });
-    const result = await runCommand(input.action.command, this.cwd);
-    this.writeResultToView(session.id, input.action.targetViewId ?? "details", result, "raw");
-    this.appendEvent(session.id, `Ran: ${input.action.command}`);
-    this.debugLog({
-      level: result.code && result.code !== 0 ? "warn" : "info",
-      scope: "runtime",
-      sessionId: session.id,
-      message: `Action completed with exit code ${result.code ?? 0}`,
-      detail: summarizeResult(result)
+    const viewId = input.action.targetViewId ?? "details";
+    this.ensureOutputView(session, viewId, input.action.label, "log");
+    await this.runCommandForView(session.id, {
+      command: input.action.command,
+      targetViewId: viewId,
+      parser: "raw",
+      eventPrefix: "Action ran"
     });
-    this.emit();
   }
 
   stopSession(sessionId: string): void {
@@ -177,6 +198,7 @@ export class SessionManager {
 
     const session = this.sessions.get(sessionId);
     if (session) {
+      this.commandRuntime.stopSession(sessionId);
       session.liveViewIds = [];
       session.status = "stopped";
       this.appendEvent(sessionId, "Stopped session.");
@@ -228,22 +250,31 @@ export class SessionManager {
     session.messages.push(userMsg);
     this.emit();
 
-    const result = await runCommand(command, this.cwd);
-    const output = [result.stdout.trimEnd(), result.stderr.trimEnd()].filter(Boolean).join("\n") || "(no output)";
-
     const viewId = `direct-${randomUUID().slice(0, 8)}`;
-    session.views.push({ id: viewId, type: "log", title: command, content: output });
+    session.views.push({ id: viewId, type: "terminal", title: command, content: "" });
+    const result = await this.runCommandForView(session.id, {
+      command,
+      targetViewId: viewId,
+      parser: "raw",
+      eventPrefix: "Direct command"
+    });
 
     const assistantMsg: ChatMessage = {
       id: randomUUID(),
       role: "assistant",
-      content: result.code !== 0 ? `exit ${result.code ?? "?"}` : "",
+      content: result.status === "pending-approval"
+        ? "Approval required before running this command."
+        : result.code !== 0
+        ? `exit ${result.code ?? "?"}`
+        : "",
       at: Date.now(),
-      viewIds: [viewId]
+      viewIds: result.status === "pending-approval" && result.commandId ? [`approval-${result.commandId}`, viewId] : [viewId]
     };
 
     session.messages.push(assistantMsg);
-    session.status = "completed";
+    if (result.status !== "pending-approval") {
+      session.status = "completed";
+    }
     this.emit();
     return this.sessions.get(id)!;
   }
@@ -285,6 +316,9 @@ export class SessionManager {
     this.emit();
 
     this.debugLog({ level: "info", scope: "planner", sessionId, message: "Chat turn started.", detail: userText });
+
+    const localAnswer = await this.tryLocalChatAnswer(sessionId, userText);
+    if (localAnswer) return localAnswer;
 
     session.busyHint = "Thinking…";
     this.emit();
@@ -345,22 +379,29 @@ export class SessionManager {
       return errMsg;
     }
 
+    if (!response.view && response.command) {
+      response = {
+        ...response,
+        view: {
+          id: `command-output-${randomUUID().slice(0, 8)}`,
+          type: "log",
+          title: response.command.shell,
+          content: ""
+        }
+      };
+    }
+
     let resolvedViewId: string | undefined;
+    let resolvedViewIds: string[] | undefined;
 
     if (response.view) {
-      const rawView = response.view;
-      const viewId = rawView.id;
+      let rawView = response.view;
+      const viewId = this.nextChatViewId(session, rawView.id);
       resolvedViewId = viewId;
-
-      // Detach this view from any previous message so it only renders once
-      for (const msg of session.messages) {
-        if (msg.viewIds?.includes(viewId)) {
-          msg.viewIds = msg.viewIds.filter((id) => id !== viewId);
-        }
-      }
+      rawView = this.repairStaticTableFromLatestOutput(session, userText, rawView);
 
       // Build the fully typed ViewNode from the raw AI response
-      const viewNode = rawViewToViewNode(rawView);
+      const viewNode = rawViewToViewNode({ ...rawView, id: viewId });
 
       const existingIdx = session.views.findIndex((v) => v.id === viewId);
       if (existingIdx >= 0) {
@@ -378,7 +419,7 @@ export class SessionManager {
         viewNode.type === "file-tree" || viewNode.type === "metric" || viewNode.type === "card-grid" ||
         viewNode.type === "heatmap";
 
-      if (!isStaticContent && response.command) {
+      if (response.command) {
         let shell = response.command.shell;
         let parser = response.command.parser;
         let intervalMs = response.command.intervalMs;
@@ -387,10 +428,19 @@ export class SessionManager {
         this.emit();
         this.debugLog({ level: "info", scope: "runtime", sessionId, message: `Chat command: ${shell}` });
 
-        let cmdResult = await runCommand(shell, this.cwd);
+        let cmdResult = await this.runCommandForView(sessionId, {
+          command: shell,
+          targetViewId: viewId,
+          parser,
+          intervalMs: intervalMs ?? undefined,
+          eventPrefix: "Chat ran"
+        });
+        if (cmdResult.status === "pending-approval" && cmdResult.commandId) {
+          resolvedViewIds = [`approval-${cmdResult.commandId}`, viewId];
+        }
 
         const MAX_HEAL = 2;
-        for (let heal = 0; heal < MAX_HEAL && (cmdResult.code ?? 0) !== 0; heal++) {
+        for (let heal = 0; heal < MAX_HEAL && cmdResult.status !== "pending-approval" && (cmdResult.code ?? 0) !== 0; heal++) {
           const errOut = [cmdResult.stderr.trim(), cmdResult.stdout.trim()]
             .filter(Boolean).join("\n").slice(0, 400);
           const healHint =
@@ -434,24 +484,16 @@ export class SessionManager {
           session.busyHint = "Running fixed command…";
           this.emit();
           this.debugLog({ level: "info", scope: "runtime", sessionId, message: `Healed command: ${shell}` });
-          cmdResult = await runCommand(shell, this.cwd);
-        }
-
-        this.writeResultToView(sessionId, viewId, cmdResult, parser);
-        this.appendEvent(sessionId, `Chat ran: ${shell}`);
-
-        if (intervalMs) {
-          const handle = setInterval(() => {
-            void runCommand(shell, this.cwd).then((r) => {
-              this.writeResultToView(sessionId, viewId, r, parser);
-              this.emit();
-            });
-          }, intervalMs);
-
-          const handles = this.pollers.get(sessionId) ?? [];
-          handles.push(handle);
-          this.pollers.set(sessionId, handles);
-          session.liveViewIds = [...new Set([...session.liveViewIds, viewId])];
+          cmdResult = await this.runCommandForView(sessionId, {
+            command: shell,
+            targetViewId: viewId,
+            parser,
+            intervalMs: intervalMs ?? undefined,
+            eventPrefix: "Chat ran fixed command"
+          });
+          if (cmdResult.status === "pending-approval" && cmdResult.commandId) {
+            resolvedViewIds = [`approval-${cmdResult.commandId}`, viewId];
+          }
         }
       } else if (isStaticContent) {
         this.appendEvent(sessionId, `Rendered ${viewNode.type} view: ${viewId}`);
@@ -470,7 +512,7 @@ export class SessionManager {
       role: "assistant",
       content: response.reply,
       at: Date.now(),
-      viewIds: resolvedViewId ? [resolvedViewId] : undefined
+      viewIds: resolvedViewIds ?? (resolvedViewId ? [resolvedViewId] : undefined)
     };
 
     session.messages.push(assistantMsg);
@@ -497,17 +539,13 @@ export class SessionManager {
       message: "Running one-shot data source",
       detail: source.command
     });
-    const result = await runCommand(source.command, this.cwd);
-    this.writeResultToView(sessionId, source.targetViewId, result, source.parser);
-    this.appendEvent(sessionId, `Ran: ${source.command}`);
-    this.debugLog({
-      level: result.code && result.code !== 0 ? "warn" : "info",
-      scope: "runtime",
-      sessionId,
-      message: `One-shot command completed with exit code ${result.code ?? 0}`,
-      detail: summarizeResult(result)
+    const result = await this.runCommandForView(sessionId, {
+      command: source.command,
+      targetViewId: source.targetViewId,
+      parser: source.parser,
+      eventPrefix: "Ran"
     });
-    this.markCompleted(sessionId);
+    if (result.status !== "pending-approval") this.markCompleted(sessionId);
   }
 
   private async refreshInteractive(sessionId: string, dataSources: DataSourceSpec[]): Promise<void> {
@@ -519,15 +557,11 @@ export class SessionManager {
         message: "Loading interactive data source",
         detail: source.command
       });
-      const result = await runCommand(source.command, this.cwd);
-      this.writeResultToView(sessionId, source.targetViewId, result, source.parser);
-      this.appendEvent(sessionId, `Loaded: ${source.command}`);
-      this.debugLog({
-        level: result.code && result.code !== 0 ? "warn" : "info",
-        scope: "runtime",
-        sessionId,
-        message: `Interactive data source completed with exit code ${result.code ?? 0}`,
-        detail: summarizeResult(result)
+      await this.runCommandForView(sessionId, {
+        command: source.command,
+        targetViewId: source.targetViewId,
+        parser: source.parser,
+        eventPrefix: "Loaded"
       });
     }
 
@@ -550,17 +584,13 @@ export class SessionManager {
           message: "Polling streaming data source",
           detail: source.command
         });
-        const result = await runCommand(source.command, this.cwd);
-        this.writeResultToView(sessionId, source.targetViewId, result, source.parser);
-        this.appendEvent(sessionId, `Updated: ${source.command}`);
-        this.debugLog({
-          level: result.code && result.code !== 0 ? "warn" : "info",
-          scope: "runtime",
-          sessionId,
-          message: `Streaming poll completed with exit code ${result.code ?? 0}`,
-          detail: summarizeResult(result)
+        await this.runCommandForView(sessionId, {
+          command: source.command,
+          targetViewId: source.targetViewId,
+          parser: source.parser,
+          eventPrefix: "Updated",
+          suppressApproval: true
         });
-        this.emit();
       };
 
       void run();
@@ -604,34 +634,286 @@ export class SessionManager {
       return;
     }
 
-    if (view.type === "log" || view.type === "markdown" || view.type === "html") {
-      const combined = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n\n");
-      view.content = combined || "";
-      return;
+    applyResultToView(view, result, parser);
+  }
+
+  private async runCommandForView(
+    sessionId: string,
+    input: {
+      command: string;
+      targetViewId: string;
+      parser: DataSourceSpec["parser"];
+      intervalMs?: number;
+      eventPrefix: string;
+      suppressApproval?: boolean;
+    }
+  ): Promise<RunResult> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session ${sessionId} not found.`);
+
+    const view = session.views.find((item) => item.id === input.targetViewId);
+    if (view && (view.type === "log" || view.type === "terminal")) {
+      view.content = "";
     }
 
-    if (view.type === "stats") {
-      view.items = buildStats(result);
-      return;
+    session.status = "running";
+    session.liveViewIds = [...new Set([...session.liveViewIds, input.targetViewId])];
+    this.emit();
+
+    const result = await this.commandRuntime.run({
+      sessionId,
+      viewId: input.targetViewId,
+      command: input.command,
+      cwd: this.cwd,
+      parser: input.parser,
+      requireApproval: input.suppressApproval ? false : undefined
+    });
+
+    if (result.status === "pending-approval") {
+      session.status = "idle";
+      session.liveViewIds = session.liveViewIds.filter((id) => id !== input.targetViewId);
+      this.appendEvent(sessionId, `Approval required: ${input.command}`);
+      this.emit();
+      return result;
     }
 
-    if (view.type === "table") {
-      if (parser === "process-table") {
-        view.rows = parseProcessTable(result.stdout);
-      } else if (parser === "git-log") {
-        view.rows = parseGitLogTable(result.stdout);
-      } else if (parser === "du-table") {
-        view.rows = parseDuTable(result.stdout);
-      } else {
-        view.rows = parseGenericTable(result.stdout, view.columns);
+    this.writeResultToView(sessionId, input.targetViewId, result, input.parser);
+    this.appendEvent(sessionId, `${input.eventPrefix}: ${input.command}`);
+    this.debugLog({
+      level: result.code && result.code !== 0 ? "warn" : "info",
+      scope: "runtime",
+      sessionId,
+      message: `Command completed with exit code ${result.code ?? 0}`,
+      detail: summarizeResult(result)
+    });
+
+    if (input.intervalMs) {
+      const handle = setInterval(() => {
+        void this.runCommandForView(sessionId, { ...input, intervalMs: undefined, suppressApproval: true });
+      }, input.intervalMs);
+
+      const handles = this.pollers.get(sessionId) ?? [];
+      handles.push(handle);
+      this.pollers.set(sessionId, handles);
+      session.liveViewIds = [...new Set([...session.liveViewIds, input.targetViewId])];
+    } else {
+      session.liveViewIds = session.liveViewIds.filter((id) => id !== input.targetViewId);
+      if (session.status === "running") session.status = "completed";
+    }
+
+    this.emit();
+    return result;
+  }
+
+  async approveCommand(commandId: string): Promise<RunResult> {
+    const result = await this.commandRuntime.approve(commandId);
+    const execution = this.findCommand(commandId);
+    if (execution?.sessionId && execution.viewId) {
+      this.writeResultToView(execution.sessionId, execution.viewId, result, execution.parser ?? "raw");
+      this.appendEvent(execution.sessionId, `Approved and ran: ${execution.command}`);
+      const session = this.sessions.get(execution.sessionId);
+      if (session) {
+        session.liveViewIds = session.liveViewIds.filter((id) => id !== execution.viewId);
+        session.status = result.code === 0 ? "completed" : "error";
       }
-      return;
+      this.emit();
+    }
+    return result;
+  }
+
+  denyCommand(commandId: string): RunResult {
+    const result = this.commandRuntime.deny(commandId);
+    const execution = this.findCommand(commandId);
+    if (execution?.sessionId) {
+      this.appendEvent(execution.sessionId, `Denied: ${execution.command}`);
+      const session = this.sessions.get(execution.sessionId);
+      if (session) session.status = "idle";
+      this.emit();
+    }
+    return result;
+  }
+
+  stopCommand(commandId: string): RunResult | undefined {
+    const result = this.commandRuntime.stop(commandId);
+    const execution = this.findCommand(commandId);
+    if (execution?.sessionId) {
+      this.appendEvent(execution.sessionId, `Stopped command: ${execution.command}`);
+      const session = this.sessions.get(execution.sessionId);
+      if (session) {
+        session.liveViewIds = session.liveViewIds.filter((id) => id !== execution.viewId);
+        session.status = "stopped";
+      }
+      this.emit();
+    }
+    return result;
+  }
+
+  async runShellFromRenderer(command: string, sessionId?: string): Promise<RunResult> {
+    if (!sessionId) {
+      return this.commandRuntime.run({ command, cwd: this.cwd, requireApproval: false });
     }
 
-    if (view.type === "bar-chart") {
-      view.items = parseDuChart(result.stdout);
-      return;
+    const session = this.sessions.get(sessionId);
+    if (!session) return this.commandRuntime.run({ command, cwd: this.cwd, requireApproval: false });
+
+    const viewId = `shell-${randomUUID().slice(0, 8)}`;
+    session.views.push({ id: viewId, type: "terminal", title: command, content: "" });
+    session.messages.push({
+      id: randomUUID(),
+      role: "assistant",
+      content: "",
+      at: Date.now(),
+      viewIds: [viewId]
+    });
+    this.emit();
+
+    const result = await this.runCommandForView(sessionId, {
+      command,
+      targetViewId: viewId,
+      parser: "raw",
+      eventPrefix: "Shell"
+    });
+    if (result.status === "pending-approval" && result.commandId) {
+      const msg = session.messages[session.messages.length - 1];
+      msg.viewIds = [`approval-${result.commandId}`, viewId];
+      this.emit();
     }
+    return result;
+  }
+
+  private recordCommand(execution: CommandExecution): void {
+    if (!execution.sessionId) return;
+    const session = this.sessions.get(execution.sessionId);
+    if (!session) return;
+
+    session.commands = [execution, ...(session.commands ?? []).filter((cmd) => cmd.commandId !== execution.commandId)];
+    if (execution.status === "pending-approval") {
+      const approvalView: ViewNode = {
+        id: `approval-${execution.commandId}`,
+        type: "approval",
+        title: "Command approval",
+        data: {
+          commandId: execution.commandId,
+          command: execution.command,
+          risk: execution.risk,
+          reason: execution.riskReason,
+          status: execution.status
+        }
+      };
+      session.views.push(approvalView);
+    }
+    this.emitCommand(execution);
+    this.emit();
+  }
+
+  private updateCommand(execution: CommandExecution): void {
+    if (!execution.sessionId) return;
+    const session = this.sessions.get(execution.sessionId);
+    if (!session) return;
+
+    const commands = session.commands ?? [];
+    const index = commands.findIndex((cmd) => cmd.commandId === execution.commandId);
+    if (index >= 0) commands[index] = execution;
+    else commands.unshift(execution);
+    session.commands = commands;
+
+    const approval = session.views.find((view): view is Extract<ViewNode, { type: "approval" }> =>
+      view.type === "approval" && view.data.commandId === execution.commandId
+    );
+    if (approval) approval.data.status = execution.status;
+
+    if (execution.viewId && execution.status !== "running") {
+      session.liveViewIds = session.liveViewIds.filter((id) => id !== execution.viewId);
+    }
+    this.emitCommand(execution);
+    this.emit();
+  }
+
+  private appendCommandChunk(execution: CommandExecution, stream: "stdout" | "stderr", chunk: string): void {
+    if (!execution.sessionId || !execution.viewId) return;
+    const session = this.sessions.get(execution.sessionId);
+    const view = session?.views.find((item) => item.id === execution.viewId);
+    if (!session || !view) return;
+
+    appendChunkToView(view, chunk, stream);
+    this.updateCommand(execution);
+  }
+
+  private findCommand(commandId: string): CommandExecution | undefined {
+    for (const session of this.sessions.values()) {
+      const command = session.commands?.find((item) => item.commandId === commandId);
+      if (command) return command;
+    }
+    return undefined;
+  }
+
+  private ensureOutputView(session: TaskSession, viewId: string, title: string, type: "log" | "terminal"): void {
+    if (session.views.some((view) => view.id === viewId)) return;
+    session.views.push({ id: viewId, type, title, content: "" });
+  }
+
+  private async tryLocalChatAnswer(sessionId: string, userText: string): Promise<ChatMessage | null> {
+    if (!/\b(app|project|repo|repository|codebase)\b/i.test(userText) || !/\b(structur|tree|files?|folders?|directories)\b/i.test(userText)) {
+      return null;
+    }
+
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const viewId = `app-structure-${randomUUID().slice(0, 8)}`;
+    session.views.push({ id: viewId, type: "terminal", title: "Project structure", content: "" });
+    session.busyHint = "Inspecting project…";
+    this.emit();
+
+    await this.runCommandForView(sessionId, {
+      command: "find . -maxdepth 3 \\( -path './node_modules' -o -path './.git' -o -path './dist-electron' -o -path './dist-renderer' \\) -prune -o -print 2>/dev/null | sed 's#^./##' | sort | head -n 180",
+      targetViewId: viewId,
+      parser: "raw",
+      eventPrefix: "Inspected project structure"
+    });
+
+    session.busyHint = undefined;
+    const assistantMsg: ChatMessage = {
+      id: randomUUID(),
+      role: "assistant",
+      content: "Here is the current project structure from the workspace.",
+      at: Date.now(),
+      viewIds: [viewId]
+    };
+    session.messages.push(assistantMsg);
+    this.emit();
+    return assistantMsg;
+  }
+
+  private nextChatViewId(session: TaskSession, requestedId: string): string {
+    if (!session.views.some((view) => view.id === requestedId)) return requestedId;
+
+    let index = 2;
+    let candidate = `${requestedId}-${index}`;
+    while (session.views.some((view) => view.id === candidate)) {
+      index += 1;
+      candidate = `${requestedId}-${index}`;
+    }
+    return candidate;
+  }
+
+  private repairStaticTableFromLatestOutput(session: TaskSession, userText: string, rawView: ChatResult["view"]): NonNullable<ChatResult["view"]> {
+    if (!rawView || rawView.type !== "table") return rawView!;
+    if (!/\b(table|tabular|columns?|rows?)\b/i.test(userText)) return rawView;
+
+    const latestTextView = [...session.views].reverse().find((view) =>
+      (view.type === "log" || view.type === "terminal") && view.content.trim()
+    );
+    if (!latestTextView || (latestTextView.type !== "log" && latestTextView.type !== "terminal")) return rawView;
+
+    const parsed = parseFixedWidthTable(latestTextView.content);
+    if (!parsed) return rawView;
+
+    return {
+      ...rawView,
+      columns: parsed.columns,
+      rows: parsed.rows
+    };
   }
 
   private markCompleted(sessionId: string): void {
@@ -666,104 +948,10 @@ export class SessionManager {
     }
     this.scheduleSave();
   }
-}
 
-function summarizeResult(result: RunResult): string {
-  const stdout = result.stdout.trim();
-  const stderr = result.stderr.trim();
-  const preview = [stdout, stderr].filter(Boolean).join("\n").slice(0, 240);
-  return preview || "(no output)";
-}
-
-function buildStats(result: RunResult): Array<{ label: string; value: string }> {
-  const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
-  const lines = output.split("\n").filter(Boolean);
-
-  return [
-    { label: "lines", value: String(lines.length) },
-    { label: "exit code", value: String(result.code ?? 0) },
-    { label: "bytes", value: String(output.length) }
-  ];
-}
-
-function parseProcessTable(stdout: string): Array<Record<string, string>> {
-  const lines = stdout.split("\n").filter(Boolean);
-  const body = lines.slice(1, 13);
-
-  return body.map((line) => {
-    const parts = line.trim().split(/\s+/, 11);
-    const command = parts.slice(10).join(" ");
-
-    return {
-      user: parts[0] ?? "",
-      pid: parts[1] ?? "",
-      cpu: parts[2] ?? "",
-      mem: parts[3] ?? "",
-      command
-    };
-  });
-}
-
-function parseGitLogTable(stdout: string): Array<Record<string, string>> {
-  return stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [hash, author, date, subject] = line.split("\t");
-      return {
-        hash: hash ?? "",
-        author: author ?? "",
-        date: date ?? "",
-        subject: subject ?? ""
-      };
-    });
-}
-
-function parseDuTable(stdout: string): Array<Record<string, string>> {
-  return stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [size, ...pathParts] = line.trim().split(/\s+/);
-      return {
-        size: size ?? "",
-        path: pathParts.join(" ")
-      };
-    });
-}
-
-function parseDuChart(stdout: string): Array<{ label: string; value: string; bytes: number }> {
-  return stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [size, ...pathParts] = line.trim().split(/\s+/);
-      const label = pathParts.join(" ").replace(/^\.\//, "");
-      const value = size ?? "0";
-      return { label, value, bytes: parseHumanSize(value) };
-    })
-    .filter((item) => item.bytes > 0);
-}
-
-function parseHumanSize(value: string): number {
-  if (!value) return 0;
-  const num = parseFloat(value);
-  if (isNaN(num)) return 0;
-  const unit = value.slice(-1).toUpperCase();
-  const multipliers: Record<string, number> = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
-  return multipliers[unit] ? num * multipliers[unit] : num;
-}
-
-function parseGenericTable(stdout: string, columns: string[]): Array<Record<string, string>> {
-  return stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split(/\s+/);
-      const row: Record<string, string> = {};
-      for (let index = 0; index < columns.length; index += 1) {
-        row[columns[index]] = parts[index] ?? "";
-      }
-      return row;
-    });
+  private emitCommand(execution: CommandExecution): void {
+    for (const listener of this.commandListeners) {
+      listener(execution);
+    }
+  }
 }

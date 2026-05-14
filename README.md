@@ -37,13 +37,19 @@ Shell commands you already know (`ls`, `pwd`, `df`, `ps`, etc.) run directly wit
 - **Component discovery protocol** — AI requests full docs for a component on demand; only pays token cost when it needs it
 - ~~**Multi-step queries** — AI can run intermediate shell commands to discover filenames, PIDs, and paths before generating the final view~~
 - **Live views** — any view can auto-refresh on an interval
-- **Direct command pipeline** — shell syntax and known commands bypass the AI entirely
+- **Unified command pipeline** — direct commands, AI commands, actions, forms, and HTML widgets use the same streamed runtime
+- **Approval gates** — read-only commands run immediately; write, destructive, install/network, and unknown commands show an inline approval card
 - **Multi-provider** — OpenRouter, OpenAI, Ollama, LM Studio, OpenCode; switch at any time
-- **Session persistence** — conversations and views survive restarts
+- **Session persistence** — conversations, views, command history, approvals, failures, and stopped commands survive restarts
 - **Editable system prompt** — override the AI's behavior from settings
 - **Traces panel** — inspect every AI call, shell command, and parse result
 
 ---
+## Alpha software 
+This is an alpha software, do not use in production yet. Some things that I would like to add is truly multi threading, multi query system, working on multiple chats simultaneously, better UI / UX / DX. 
+This system is running into timeouts sometimes. 
+
+
 
 ## Supported components
 
@@ -162,6 +168,10 @@ Inputs that look like shell commands bypass the AI and run directly:
 
 Everything else goes to the AI, which can choose to run a command and render the output in a view.
 
+Read-only commands run immediately. Commands classified as `write`, `destructive`, `network/install`, or `unknown` require inline approval before execution.
+
+This v1 runtime uses Node `child_process.spawn` through `/bin/zsh`. It supports streamed output, exit codes, cancellation, and timeouts, but it is not a full PTY: interactive TUI programs that require raw terminal control are not supported yet.
+
 ---
 
 ## HTML widget scripting
@@ -170,10 +180,10 @@ Everything else goes to the AI, which can choose to run a command and render the
 
 ```js
 const result = await window.antiTerminal.runShell("git log --oneline -5");
-console.log(result.stdout); // { stdout, stderr, code }
+console.log(result.stdout); // { stdout, stderr, code, status, commandId }
 ```
 
-Write commands are allowed inside `html` views. The session ID is available as `window.__atSessionId`.
+Write commands are allowed inside `html` views only after the runtime displays an approval card and the user approves them. The session ID is available as `window.__atSessionId`.
 
 **CSS variables available in html views:**
 ```css

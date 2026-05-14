@@ -5,8 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { createTaskPlan } from "./planner/index.js";
 import { SessionManager } from "./runtime/sessionManager.js";
-import { runCommand } from "./runtime/shell.js";
-import type { ActionInvocation, DebugLogEntry } from "./runtime/types.js";
+import type { ActionInvocation, CommandExecution, DebugLogEntry } from "./runtime/types.js";
 import { SettingsManager } from "./settings/settingsManager.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -94,11 +93,15 @@ app.whenReady().then(() => {
   const unsubscribe = sessionManager.subscribe((snapshot) => {
     mainWindow?.webContents.send("sessions:update", snapshot);
   });
+  const unsubscribeCommands = sessionManager.subscribeCommands((execution: CommandExecution) => {
+    mainWindow?.webContents.send("command:update", execution);
+  });
 
   void sessionManager.load();
 
   app.on("before-quit", () => {
     unsubscribe();
+    unsubscribeCommands();
   });
 
   ipcMain.handle("task:create", async (_event, prompt: string) => {
@@ -184,7 +187,23 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("shell:run", async (_event, command: string) => {
-    return runCommand(command, process.cwd());
+    return sessionManager.runShellFromRenderer(command);
+  });
+
+  ipcMain.handle("shell:run-for-session", async (_event, sessionId: string, command: string) => {
+    return sessionManager.runShellFromRenderer(command, sessionId);
+  });
+
+  ipcMain.handle("command:approve", async (_event, commandId: string) => {
+    return sessionManager.approveCommand(commandId);
+  });
+
+  ipcMain.handle("command:deny", async (_event, commandId: string) => {
+    return sessionManager.denyCommand(commandId);
+  });
+
+  ipcMain.handle("command:stop", async (_event, commandId: string) => {
+    return sessionManager.stopCommand(commandId);
   });
 
   ipcMain.handle("window:minimize", () => { mainWindow?.minimize(); });

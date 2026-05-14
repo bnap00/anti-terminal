@@ -899,6 +899,115 @@ button {
   line-height: 1.55;
 }
 
+.terminal-view {
+  margin: 0;
+  max-height: 560px;
+  overflow: auto;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.84rem;
+  color: #d7ded6;
+  line-height: 1.55;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.approval-card {
+  border: 1px solid rgba(228, 179, 73, 0.24);
+  background: rgba(228, 179, 73, 0.06);
+  border-radius: 8px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+}
+
+.approval-destructive {
+  border-color: rgba(255, 133, 127, 0.34);
+  background: rgba(255, 133, 127, 0.07);
+}
+
+.approval-main {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.approval-heading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.approval-risk,
+.approval-status {
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.approval-risk {
+  color: var(--warn);
+}
+
+.approval-status {
+  color: var(--muted);
+}
+
+.approval-command {
+  margin: 0;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-reason {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.approval-button {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+}
+
+.approval-approve {
+  color: var(--success);
+  border-color: rgba(61, 214, 140, 0.28);
+  background: rgba(61, 214, 140, 0.08);
+}
+
+.approval-deny {
+  color: var(--danger);
+  border-color: rgba(255, 133, 127, 0.28);
+  background: rgba(255, 133, 127, 0.08);
+}
+
+.approval-final {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

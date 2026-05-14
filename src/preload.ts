@@ -1,10 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import type { ActionInvocation, ChatMessage, DebugLogEntry, RunResult, SessionSnapshot, TaskSession } from "./main/runtime/types.js";
+import type { ActionInvocation, ChatMessage, CommandExecution, DebugLogEntry, RunResult, SessionSnapshot, TaskSession } from "./main/runtime/types.js";
 import type { AppSettings } from "./main/settings/types.js";
 
 type Listener = (snapshot: SessionSnapshot) => void;
 type DebugListener = (entry: DebugLogEntry) => void;
+type CommandListener = (execution: CommandExecution) => void;
 
 contextBridge.exposeInMainWorld("antiTerminal", {
   createTask(prompt: string): Promise<TaskSession> {
@@ -31,6 +32,9 @@ contextBridge.exposeInMainWorld("antiTerminal", {
   sendChat(sessionId: string, userText: string): Promise<ChatMessage> {
     return ipcRenderer.invoke("chat:send", sessionId, userText);
   },
+  startChat(prompt: string): Promise<TaskSession> {
+    return ipcRenderer.invoke("chat:start", prompt);
+  },
   openSettingsWindow(): Promise<void> {
     return ipcRenderer.invoke("settings:open-window");
   },
@@ -50,14 +54,25 @@ contextBridge.exposeInMainWorld("antiTerminal", {
       ipcRenderer.removeListener("sessions:update", wrapped);
     };
   },
-  runShell(command: string): Promise<RunResult> {
-    return ipcRenderer.invoke("shell:run", command);
+  runShell(command: string, sessionId?: string): Promise<RunResult> {
+    return sessionId
+      ? ipcRenderer.invoke("shell:run-for-session", sessionId, command)
+      : ipcRenderer.invoke("shell:run", command);
   },
   getCwd(): Promise<string> {
     return ipcRenderer.invoke("cwd:get");
   },
   runDirect(sessionId: string | null, command: string): Promise<TaskSession> {
     return ipcRenderer.invoke("chat:direct", sessionId, command);
+  },
+  approveCommand(commandId: string): Promise<RunResult> {
+    return ipcRenderer.invoke("command:approve", commandId);
+  },
+  denyCommand(commandId: string): Promise<RunResult> {
+    return ipcRenderer.invoke("command:deny", commandId);
+  },
+  stopCommand(commandId: string): Promise<RunResult | undefined> {
+    return ipcRenderer.invoke("command:stop", commandId);
   },
   onSettingsUpdate(listener: (settings: AppSettings) => void): () => void {
     const wrapped = (_event: Electron.IpcRendererEvent, s: AppSettings) => listener(s);
@@ -75,6 +90,16 @@ contextBridge.exposeInMainWorld("antiTerminal", {
     ipcRenderer.on("debug:log", wrapped);
     return () => {
       ipcRenderer.removeListener("debug:log", wrapped);
+    };
+  },
+  onCommandUpdate(listener: CommandListener): () => void {
+    const wrapped = (_event: Electron.IpcRendererEvent, execution: CommandExecution) => {
+      listener(execution);
+    };
+
+    ipcRenderer.on("command:update", wrapped);
+    return () => {
+      ipcRenderer.removeListener("command:update", wrapped);
     };
   }
 });

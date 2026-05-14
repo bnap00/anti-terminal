@@ -34,8 +34,10 @@ contextBridge.exposeInMainWorld("antiTerminal", {
   updateSettings(next) {
     return ipcRenderer.invoke("settings:update", next);
   },
-  runShell(command) {
-    return ipcRenderer.invoke("shell:run", command);
+  runShell(command, sessionId) {
+    return sessionId
+      ? ipcRenderer.invoke("shell:run-for-session", sessionId, command)
+      : ipcRenderer.invoke("shell:run", command);
   },
   getCwd() {
     return ipcRenderer.invoke("cwd:get");
@@ -45,6 +47,15 @@ contextBridge.exposeInMainWorld("antiTerminal", {
   },
   runDirect(sessionId, command) {
     return ipcRenderer.invoke("chat:direct", sessionId, command);
+  },
+  approveCommand(commandId) {
+    return ipcRenderer.invoke("command:approve", commandId);
+  },
+  denyCommand(commandId) {
+    return ipcRenderer.invoke("command:deny", commandId);
+  },
+  stopCommand(commandId) {
+    return ipcRenderer.invoke("command:stop", commandId);
   },
   onSettingsUpdate(listener) {
     const wrapped = (_event, s) => listener(s);
@@ -78,6 +89,16 @@ contextBridge.exposeInMainWorld("antiTerminal", {
     ipcRenderer.on("debug:log", wrapped);
     return () => {
       ipcRenderer.removeListener("debug:log", wrapped);
+    };
+  },
+  onCommandUpdate(listener) {
+    const wrapped = (_event, execution) => {
+      listener(execution);
+    };
+
+    ipcRenderer.on("command:update", wrapped);
+    return () => {
+      ipcRenderer.removeListener("command:update", wrapped);
     };
   }
 });

@@ -1,4 +1,6 @@
 export type RuntimeMode = "one-shot" | "streaming" | "interactive";
+export type CommandRisk = "read" | "write" | "destructive" | "network/install" | "unknown";
+export type CommandStatus = "pending-approval" | "running" | "completed" | "failed" | "denied" | "stopped" | "timed-out";
 
 export interface FileTreeNode {
   name: string;
@@ -11,6 +13,18 @@ export type ViewNode =
   | { id: string; type: "html"; title?: string; content: string }
   | { id: string; type: "log"; title?: string; content: string }
   | { id: string; type: "terminal"; title?: string; content: string }
+  | {
+      id: string;
+      type: "approval";
+      title?: string;
+      data: {
+        commandId: string;
+        command: string;
+        risk: CommandRisk;
+        reason: string;
+        status: CommandStatus;
+      };
+    }
   | { id: string; type: "code"; title?: string; lang?: string; content: string }
   | { id: string; type: "diff"; title?: string; content: string }
   | { id: string; type: "json-tree"; title?: string; content: string }
@@ -139,9 +153,33 @@ export interface DebugLogEntry {
 }
 
 export interface RunResult {
+  commandId?: string;
+  status?: CommandStatus;
+  startedAt?: number;
+  endedAt?: number;
   stdout: string;
   stderr: string;
-  code: number;
+  code: number | null;
+  signal?: string | null;
+  risk?: CommandRisk;
+  approvedByUser?: boolean;
+}
+
+export interface CommandExecution extends RunResult {
+  commandId: string;
+  sessionId?: string;
+  viewId?: string;
+  command: string;
+  cwd: string;
+  status: CommandStatus;
+  startedAt: number;
+  endedAt?: number;
+  code: number | null;
+  signal: string | null;
+  risk: CommandRisk;
+  riskReason: string;
+  approvedByUser: boolean;
+  parser?: DataSourceSpec["parser"];
 }
 
 export interface TaskSession {
@@ -157,6 +195,7 @@ export interface TaskSession {
   views: ViewNode[];
   liveViewIds: string[];
   dataSources: DataSourceSpec[];
+  commands?: CommandExecution[];
   eventLog: Array<{ at: number; message: string }>;
   tokenUsage?: { input: number; output: number };
   busyHint?: string;
