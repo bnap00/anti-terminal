@@ -1,0 +1,34 @@
+{
+  "name": "anti-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Electron wrapper for agentic shell tasks with dynamic task-specific UI.",
+  "main": "dist-electron/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"tsc -p tsconfig.node.json -w\" \"vite\" \"wait-on dist-electron/main/main.js http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "build": "tsc -p tsconfig.node.json && vite build",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc --noEmit",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.47",
+    "ai": "^6.0.182",
+    "electron": "^41.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  }
+}
