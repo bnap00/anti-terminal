@@ -444,9 +444,7 @@ export default function App() {
           <div className="dock-footer">
             <div className="dock-meta">
               <span className="dock-provider">
-                {settings?.provider !== "mock"
-                ? settings?.providers[settings.provider]?.model
-                : "mock"}
+                {settings?.providers[settings.provider]?.model}
               </span>
               <span className="dock-hint">↵ send · ⇧↵ newline</span>
             </div>

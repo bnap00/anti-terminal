@@ -6,7 +6,6 @@ import type { AppSettings } from "../settings/types.js";
 import { DEFAULT_CHAT_SYSTEM_PROMPT } from "../settings/types.js";
 import type { DataSourceSpec, TaskSession, ViewNode } from "./types.js";
 import { createProvider, getActiveModel } from "../aiProvider.js";
-import { runCommand } from "./shell.js";
 
 const rawViewSchema = z.object({
   id: z.string().describe("Kebab-case ID; reuse an existing view ID to update in place"),
@@ -25,10 +24,7 @@ const rawViewSchema = z.object({
 
 const chatResponseSchema = z.object({
   reply: z.string().min(1).describe("Conversational response — always present"),
-  run: z
-    .string()
-    .optional()
-    .describe("Execute this read-only shell command and receive its output before producing the final response. Use for multi-step queries where you need intermediate data."),
+  // run: z.string().optional().describe("multi-step intermediate shell command — disabled"),
   load_components: z
     .array(z.string())
     .optional()
@@ -125,38 +121,10 @@ export async function sendChatMessage(
       continue;
     }
 
-    // run — execute intermediate shell command, feed output back, continue
-    if (parsed.run) {
-      const cmd = parsed.run;
-      log({ level: "info", message: "Agent intermediate run.", detail: cmd });
-      onStep?.(`Running: ${cmd.length > 60 ? cmd.slice(0, 57) + "…" : cmd}`);
+    // Multi-step `run` protocol disabled — model produces empty responses with it enabled
+    // if (parsed.run) { ... }
 
-      const cmdResult = await runCommand(cmd, cwd);
-      const output = [cmdResult.stdout.trim(), cmdResult.stderr.trim()]
-        .filter(Boolean)
-        .join("\n")
-        .slice(0, 4000);
-
-      log({ level: "info", message: "Intermediate run output.", detail: output.slice(0, 300) });
-
-      agentMessages = [
-        ...agentMessages,
-        { role: "assistant", content: result.text },
-        {
-          role: "user",
-          content: [
-            `Output of \`${cmd}\`:`,
-            "```",
-            output || "(no output)",
-            "```",
-            "Now produce your final response using this. Do NOT include `run`."
-          ].join("\n")
-        }
-      ];
-      continue;
-    }
-
-    // Final response — no run, no load_components
+    // Final response — no load_components
     log({ level: "info", message: "Final response parsed.", detail: JSON.stringify(parsed).slice(0, 200) });
     return { ...parsed, _usage: totalUsage };
   }

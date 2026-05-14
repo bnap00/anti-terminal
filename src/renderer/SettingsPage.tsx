@@ -81,7 +81,7 @@ export default function SettingsPage() {
 
   function patchProvider(key: keyof AppSettings["providers"][Exclude<ProviderType, "mock">], value: string) {
     const p = settings?.provider;
-    if (!p || p === "mock" || !settings) return;
+    if (!p || !settings) return;
     setSettings((s) =>
       s
         ? {
@@ -100,8 +100,8 @@ export default function SettingsPage() {
   }
 
   const activeProvider = settings.provider;
-  const meta = activeProvider !== "mock" ? PROVIDER_META[activeProvider] : null;
-  const config = activeProvider !== "mock" ? settings.providers[activeProvider] : null;
+  const meta = PROVIDER_META[activeProvider];
+  const config = settings.providers[activeProvider];
 
   return (
     <div className="sp-root">
@@ -121,8 +121,7 @@ export default function SettingsPage() {
                 className={`sp-provider-btn ${settings.provider === p ? "active" : ""}`}
                 onClick={() => setSettings((s) => (s ? { ...s, provider: p } : s))}
               >
-                {p === "mock" ? "Mock" : PROVIDER_META[p].label}
-                {p === "mock" && <span className="sp-provider-badge">offline</span>}
+                {PROVIDER_META[p].label}
                 {p === "opencode" && <span className="sp-provider-badge">proxy</span>}
                 {(p === "ollama" || p === "lmstudio") && (
                   <span className="sp-provider-badge">local</span>
@@ -171,14 +170,6 @@ export default function SettingsPage() {
                 spellCheck={false}
               />
             </label>
-          </section>
-        )}
-
-        {activeProvider === "mock" && (
-          <section className="sp-section">
-            <p className="sp-mock-note">
-              Mock mode returns canned plans without any network requests. Useful for testing the UI.
-            </p>
           </section>
         )}
 

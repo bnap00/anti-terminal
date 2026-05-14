@@ -35,6 +35,7 @@ Shell commands you already know (`ls`, `pwd`, `df`, `ps`, etc.) run directly wit
 - **Natural language → UI** — AI maps your prompt to the right component automatically
 - **20 built-in view types** — charts, tables, forms, code, diff, kanban, and more
 - **Component discovery protocol** — AI requests full docs for a component on demand; only pays token cost when it needs it
+- ~~**Multi-step queries** — AI can run intermediate shell commands to discover filenames, PIDs, and paths before generating the final view~~
 - **Live views** — any view can auto-refresh on an interval
 - **Direct command pipeline** — shell syntax and known commands bypass the AI entirely
 - **Multi-provider** — OpenRouter, OpenAI, Ollama, LM Studio, OpenCode; switch at any time
@@ -122,15 +123,20 @@ One extra round-trip, paid only when needed. The `html` component is always avai
 
 ---
 
+~~## Multi-step queries~~
+
+~~For queries that require discovering something before rendering (e.g. "diff the largest file"), the AI can use a `run` field to execute an intermediate shell command and receive its output before producing the final response. Up to 4 chained steps are supported.~~
+
+---
+
 ## Providers
 
-| Provider | Notes |
-|----------|-------|
-| OpenRouter | Recommended; access to hundreds of models via one API key |
-| OpenAI | Direct GPT-4o, o1, etc. |
-| Ollama | Local models, no API key needed |
-| LM Studio | Local models via LM Studio server |
-
+ * OpenRouter
+ * OpenAI
+ * OpenCode
+ * Ollama
+ * LM Studio 
+ 
 Switch provider and model from **Settings (⌘,)**. Changes take effect immediately and persist across restarts.
 
 ---

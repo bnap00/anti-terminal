@@ -379,14 +379,65 @@ export class SessionManager {
         viewNode.type === "heatmap";
 
       if (!isStaticContent && response.command) {
-        const { shell, parser, intervalMs } = response.command;
+        let shell = response.command.shell;
+        let parser = response.command.parser;
+        let intervalMs = response.command.intervalMs;
 
         session.busyHint = "Running command…";
         this.emit();
-
         this.debugLog({ level: "info", scope: "runtime", sessionId, message: `Chat command: ${shell}` });
-        const result = await runCommand(shell, this.cwd);
-        this.writeResultToView(sessionId, viewId, result, parser);
+
+        let cmdResult = await runCommand(shell, this.cwd);
+
+        const MAX_HEAL = 2;
+        for (let heal = 0; heal < MAX_HEAL && (cmdResult.code ?? 0) !== 0; heal++) {
+          const errOut = [cmdResult.stderr.trim(), cmdResult.stdout.trim()]
+            .filter(Boolean).join("\n").slice(0, 400);
+          const healHint =
+            `Your command failed with exit code ${cmdResult.code ?? "?"}:\n` +
+            `  ${shell}\n` +
+            `Output:\n${errOut || "(none)"}\n\n` +
+            `Fix the command and return a corrected response.`;
+
+          this.debugLog({ level: "warn", scope: "runtime", sessionId, message: `Command failed — self-healing (${heal + 1}/${MAX_HEAL}).`, detail: errOut.slice(0, 120) });
+          session.busyHint = "Fixing error…";
+          this.emit();
+
+          let healed: ChatResult | null = null;
+          try {
+            healed = await sendChatMessage(userText, session, settings, this.cwd,
+              (e) => this.debugLog({ ...e, scope: "planner", sessionId }),
+              healHint,
+              (h) => { session.busyHint = h; this.emit(); }
+            );
+          } catch { break; }
+
+          if (!healed?.command) break;
+
+          // Fold heal token cost into response so existing accounting picks it up
+          response = {
+            ...response,
+            reply: healed.reply,
+            _usage: { input: response._usage.input + healed._usage.input, output: response._usage.output + healed._usage.output }
+          };
+
+          if (healed.view) {
+            const healedNode = rawViewToViewNode(healed.view);
+            const idx = session.views.findIndex((v) => v.id === healedNode.id);
+            if (idx >= 0) session.views[idx] = healedNode;
+          }
+
+          shell = healed.command.shell;
+          parser = healed.command.parser;
+          intervalMs = healed.command.intervalMs;
+
+          session.busyHint = "Running fixed command…";
+          this.emit();
+          this.debugLog({ level: "info", scope: "runtime", sessionId, message: `Healed command: ${shell}` });
+          cmdResult = await runCommand(shell, this.cwd);
+        }
+
+        this.writeResultToView(sessionId, viewId, cmdResult, parser);
         this.appendEvent(sessionId, `Chat ran: ${shell}`);
 
         if (intervalMs) {

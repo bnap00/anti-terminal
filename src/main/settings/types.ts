@@ -6,7 +6,7 @@ export interface ProviderConfig {
   model: string;
 }
 
-export type ProvidersMap = Record<Exclude<ProviderType, "mock">, ProviderConfig>;
+export type ProvidersMap = Record<ProviderType, ProviderConfig>;
 
 export interface AppSettings {
   provider: ProviderType;
@@ -47,7 +47,7 @@ export const DEFAULT_CHAT_SYSTEM_PROMPT = [
   "Return JSON only. No markdown fences. No explanation outside the JSON.",
   "",
   "RESPONSE SCHEMA:",
-  '{ "reply": "string", "run"?: "bash command", "load_components"?: ["type1"], "view": { "id": "kebab-id", "type": "string", "title": "string", "content"?: "string", "lang"?: "string", "data"?: {} } | null, "command": { "shell": "bash", "parser": "raw|git-log|process-table|du-table|du-chart", "intervalMs"?: number } | null }',
+  '{ "reply": "string", "load_components"?: ["type1"], "view": { "id": "kebab-id", "type": "string", "title": "string", "content"?: "string", "lang"?: "string", "data"?: {} } | null, "command": { "shell": "bash", "parser": "raw|git-log|process-table|du-table|du-chart", "intervalMs"?: number } | null }',
   "",
   "COMPONENT DISCOVERY (use load_components when you need full schema/examples):",
   "- bar-chart: horizontal bars comparing sizes, counts, rankings (legacy inline: items[{label,value,bytes}])",
@@ -78,25 +78,6 @@ export const DEFAULT_CHAT_SYSTEM_PROMPT = [
   '- When you want to use a component but need the exact data schema and example, include "load_components": ["line-chart", "form"] in your response (omit view/command).',
   "- The system will reply with full docs. Your NEXT response should include the actual view (no load_components).",
   "- You can also use html for any custom visual without requesting docs.",
-  "",
-  "MULTI-STEP QUERIES:",
-  "- When answering requires knowing something first (a filename, a PID, a path, a value from the system), use `run` to get it.",
-  '- Respond with ONLY { "reply": "short status", "run": "the bash command" } — no view, no command.',
-  "- The output is returned to you verbatim. Use it to construct your final response.",
-  "- You may chain up to 4 `run` steps before producing the final view.",
-  "- NEVER describe what to run in markdown. NEVER assume a filename or path. Always use `run` to discover it first.",
-  "",
-  'MULTI-STEP EXAMPLE — "diff of the largest code file":',
-  "Step 1 you respond:",
-  '{ "reply": "Finding the largest file…", "run": "find . -maxdepth 4 -type f \\( -name \'*.ts\' -o -name \'*.tsx\' -o -name \'*.js\' -o -name \'*.py\' \\) -not -path \'*/node_modules/*\' -not -path \'*/.git/*\' | xargs wc -l 2>/dev/null | sort -rn | head -2 | tail -1 | awk \'{print $2}\'" }',
-  "System returns: src/renderer/App.tsx",
-  "Step 2 you respond:",
-  '{ "reply": "Here\'s the diff for App.tsx, the largest file.", "view": { "id": "largest-diff", "type": "diff", "title": "App.tsx diff" }, "command": { "shell": "git diff HEAD -- src/renderer/App.tsx", "parser": "raw" } }',
-  "",
-  'MULTI-STEP EXAMPLE — "show config of the running nginx":',
-  "Step 1: { \"reply\": \"Finding nginx process…\", \"run\": \"ps aux | grep nginx | grep -v grep | head -1 | awk '{print $11}'\" }",
-  "System returns: /usr/sbin/nginx",
-  "Step 2: { \"reply\": \"Here's the nginx config.\", \"view\": { \"id\": \"nginx-cfg\", \"type\": \"code\", \"title\": \"nginx.conf\", \"lang\": \"nginx\" }, \"command\": { \"shell\": \"cat /etc/nginx/nginx.conf\", \"parser\": \"raw\" } }",
   "",
   "RULES:",
   "- reply is ALWAYS present. Keep it short and conversational.",
