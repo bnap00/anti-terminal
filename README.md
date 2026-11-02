@@ -216,12 +216,27 @@ No external chart library. All visualizations (line, pie, gauge, heatmap) are re
 
 ## Development
 
+This repo uses pnpm (version pinned via `packageManager` in `package.json`; `corepack enable` picks it up).
+
 ```bash
-npm install
-npm run dev        # starts Vite + tsc watch + Electron concurrently
-npm run build      # production build
-npm run typecheck  # type check without emit
+pnpm install
+pnpm dev           # starts Vite + tsc watch + Electron concurrently
+pnpm build         # production build
+pnpm typecheck     # type check without emit
 ```
+
+`pnpm-workspace.yaml` sets `minimumReleaseAge: 4320`, so pnpm only installs package versions that have been published for at least 3 days.
+
+### Secret scanning pre-commit hook
+
+A [Gitleaks](https://github.com/gitleaks/gitleaks) hook is configured in `.pre-commit-config.yaml` to block commits that contain secrets (API keys, tokens). Enable it once per clone:
+
+```bash
+pipx install pre-commit   # or: pip install pre-commit / brew install pre-commit
+pre-commit install
+```
+
+CI also runs Gitleaks, OSV-Scanner, and CodeQL on every PR (`.github/workflows/security.yml`). To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 Settings and sessions are stored in Electron's `userData` directory:
 - macOS: `~/Library/Application Support/anti-terminal/`

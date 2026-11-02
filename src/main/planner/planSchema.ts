@@ -43,7 +43,7 @@ export const viewNodeSchema = z.discriminatedUnion("type", [
     type: z.literal("table"),
     title: z.string().optional(),
     columns: z.array(z.string()),
-    rows: z.array(z.record(z.string()))
+    rows: z.array(z.record(z.string(), z.string()))
   }),
   z.object({
     id: z.string(),
