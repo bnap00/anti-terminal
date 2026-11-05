@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.88",
-    "ai": "^6.0.319",
+    "ai": "^7.0.159",
     "electron": "^42.11.18",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
