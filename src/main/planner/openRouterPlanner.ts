@@ -21,7 +21,7 @@ const plannerOutputSchema = z.object({
         content: z.string().optional().describe("For markdown/log views"),
         items: z.array(z.any()).optional().describe("For stats/bar-chart views"),
         columns: z.array(z.string()).optional().describe("For table views"),
-        rows: z.array(z.record(z.string())).optional().describe("For table views"),
+        rows: z.array(z.record(z.string(), z.string())).optional().describe("For table views"),
         actions: z.array(z.any()).optional().describe("For actions views"),
         command: z.string().optional().describe("Shell command to populate this view"),
         parser: z

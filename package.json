@@ -12,23 +12,24 @@
     "start": "electron ."
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.47",
-    "ai": "^6.0.182",
-    "electron": "^41.6.0",
+    "@ai-sdk/openai-compatible": "^2.0.88",
+    "ai": "^6.0.319",
+    "electron": "^42.11.18",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^22.19.19",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.1.2",
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.5",
     "cross-env": "^7.0.3",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.3"
-  }
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5"
+  },
+  "packageManager": "pnpm@10.34.9"
 }
